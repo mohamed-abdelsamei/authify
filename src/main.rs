@@ -1,4 +1,5 @@
 pub mod oidc;
+pub mod utils;
 
 use clap::Parser;
 use iden::oidc::callback_listener;
@@ -19,17 +20,35 @@ struct Args {
     /// The redirect URL for the OIDC flow
     #[arg(long, default_value = "http://127.0.0.1:3030/callback")]
     redirect_url: String,
-    /// The scopes requested for the OIDC flow
-    #[arg(long)]
-    scopes: Vec<String>,
+    /// The scope requested for the OIDC flow
+    #[arg(long,default_values=vec!("openid"))]
+    scope: Vec<String>,
     /// The state for the OIDC flow`         `
     #[arg(long)]
     state: Option<String>,
 }
 
-fn main() {
+/// The main entry point for the OIDC client application.
+///
+/// This function performs the following steps:
+/// 1. Parses command-line arguments
+/// 2. Logs the input parameters
+/// 3. Creates an OidcAgent instance
+/// 4. Builds the authorization URL
+/// 5. Starts the callback listener
+/// 6. Exchanges the authorization code for an access token
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The OidcAgent creation fails
+/// - The callback listener encounters an error
+/// - The token exchange fails
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command-line arguments
     let args: Args = Args::parse();
 
+    // Log the input parameters
     println!("Issuer: {}", args.issuer);
     println!("Client ID: {}", args.client_id);
     println!("Client Secret: {}", args.client_secret);
@@ -40,19 +59,19 @@ fn main() {
         &args.client_id,
         &args.client_secret,
         &args.redirect_url,
-        args.scopes,
+        args.scope,
         args.state,
     ) {
         Ok(agent) => agent,
         Err(e) => {
             eprintln!("Failed to create OidcAgent: {}", e);
-            return; // or handle the error appropriately
+            return Err(e); // or handle the error appropriately
         }
     };
 
     // check  well-knowns
     let wells = agent.get_well_knowns();
-    print!("{:?}", wells);
+    utils::print_object(wells);
 
     // build auth url
     let auth_url = agent.build_authorization_url();
@@ -70,9 +89,10 @@ fn main() {
         .block_on(async { callback_listener::listen().await })
         .expect("Failed to get auth code");
     println!("Authorization code: {}", code.clone());
-    let token = agent.get_token(code.as_str());
-    match token {
-        Ok(token) => println!("Token: {:?}", token),
+    let token_endpoint_response = agent.get_token(code.as_str());
+    match token_endpoint_response {
+        Ok(token_endpoint_response) => utils::print_object(&token_endpoint_response),
         Err(e) => eprintln!("Failed to get token: {}", e),
     }
+    Ok(())
 }

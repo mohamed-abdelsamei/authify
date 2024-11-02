@@ -8,20 +8,23 @@ use iden::oidc::callback_listener;
 #[command(version, about, long_about = None)]
 struct Args {
     /// The issuer URL for the OIDC provider
-    #[arg(short, long)]
+    #[arg(long)]
     issuer: String,
     /// The client ID for this OIDC client
-    #[arg(short = 'c', long)]
+    #[arg(long)]
     client_id: String,
     /// The client secret for this OIDC client
-    #[arg(short = 'p', long)]
+    #[arg(long)]
     client_secret: String,
     /// The redirect URL for the OIDC flow
-    #[arg(short, long)]
+    #[arg(long, default_value = "http://127.0.0.1:3030/callback")]
     redirect_url: String,
     /// The scopes requested for the OIDC flow
-    #[arg(short = 's', long)]
+    #[arg(long)]
     scopes: Vec<String>,
+    /// The state for the OIDC flow`         `
+    #[arg(long)]
+    state: Option<String>,
 }
 
 fn main() {
@@ -38,6 +41,7 @@ fn main() {
         &args.client_secret,
         &args.redirect_url,
         args.scopes,
+        args.state,
     ) {
         Ok(agent) => agent,
         Err(e) => {
@@ -59,11 +63,8 @@ fn main() {
         Ok(_) => println!("Opened auth URL in browser"),
         Err(e) => eprintln!("Failed to open auth URL in browser: {}", e),
     }
-    match open::that(format!("{}?code=12333", args.redirect_url)) {
-        Ok(_) => println!("Opened auth URL in browser"),
-        Err(e) => eprintln!("Failed to open auth URL in browser: {}", e),
-    }
 
+    // start http server to listed to callback url
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let code = runtime
         .block_on(async { callback_listener::listen().await })

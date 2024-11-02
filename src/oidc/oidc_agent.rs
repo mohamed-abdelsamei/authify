@@ -2,8 +2,6 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WellKnowns {
@@ -28,6 +26,8 @@ pub struct OidcAgent {
     scopes: Vec<String>,
     /// The well-known OIDC configuration endpoints.
     well_knowns: WellKnowns,
+
+    state: Option<String>,
 }
 impl OidcAgent {
     /// Returns a reference to the well-known OIDC configuration.
@@ -97,8 +97,12 @@ impl OidcAgent {
     pub fn build_authorization_url(&self) -> String {
         let scopes = self.scopes.join(" ");
         format!(
-            "{}?response_type=code&client_id={}&redirect_uri={}&scope={}",
-            self.well_knowns.auth_url, self.client_id, self.redirect_url, scopes
+            "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
+            self.well_knowns.auth_url,
+            self.client_id,
+            self.redirect_url,
+            scopes,
+           self.state.as_deref().unwrap_or("")
         )
     }
 
@@ -160,6 +164,7 @@ impl OidcAgent {
         client_secret: &str,
         redirect_url: &str,
         scopes: Vec<String>,
+        state: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut agent = Self {
             issuer: issuer.to_string(),
@@ -173,6 +178,7 @@ impl OidcAgent {
                 user_info_url: String::new(),
                 jwks_url: String::new(),
             },
+            state: state,
         };
 
         agent.well_knowns = agent.fetch_well_knowns_from_issuer()?;

@@ -1,6 +1,3 @@
-use std::any::Any;
-use std::fmt::Debug;
-
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -26,6 +23,7 @@ fn print_nested_structure(map: Map<String, Value>, indent: usize) {
             format_value(&value),
             indent = indent
         );
+        println!("------------------------------");
     }
 }
 

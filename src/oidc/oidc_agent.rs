@@ -2,8 +2,32 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str;
+use rand::Rng;
+use sha2::{Sha256, Digest};
+use base64::{Engine as _, engine::general_purpose};
 
 use crate::oidc::jwt_client;
+
+#[derive(Debug)]
+pub enum OidcError {
+    NetworkError(reqwest::Error),
+    InvalidResponse(String),
+    MissingField(String),
+    DecodingError(String),
+}
+
+impl std::fmt::Display for OidcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            OidcError::NetworkError(e) => write!(f, "Network error: {}", e),
+            OidcError::InvalidResponse(s) => write!(f, "Invalid response: {}", s),
+            OidcError::MissingField(s) => write!(f, "Missing field: {}", s),
+            OidcError::DecodingError(s) => write!(f, "Decoding error: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for OidcError {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WellKnowns {
@@ -36,8 +60,14 @@ pub struct OidcAgent {
     scope: Vec<String>,
     /// The well-known OIDC configuration endpoints.
     well_knowns: WellKnowns,
-
+    /// The state parameter for CSRF protection.
     state: Option<String>,
+    /// The PKCE code verifier.
+    code_verifier: Option<String>,
+    /// The PKCE code challenge.
+    code_challenge: Option<String>,
+    /// Whether to use PKCE flow.
+    use_pkce: bool,
 }
 impl OidcAgent {
     pub fn get_well_knowns(&self) -> &WellKnowns {
@@ -85,16 +115,48 @@ impl OidcAgent {
         })
     }
 
-    pub fn build_authorization_url(&self) -> String {
+    pub fn build_authorization_url(&mut self) -> Result<String, OidcError> {
         let scope = self.scope.join(" ");
-        format!(
+        let state = self.generate_state();
+        let (code_verifier, code_challenge) = self.generate_pkce_params();
+
+        self.state = Some(state.clone());
+        self.code_verifier = Some(code_verifier.clone());
+        self.code_challenge = Some(code_challenge.clone());
+
+        let mut url = format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
             self.well_knowns.auth_url,
             self.client_id,
             self.redirect_url,
             scope,
-            self.state.as_deref().unwrap_or("")
-        )
+            state
+        );
+
+        if self.use_pkce {
+            url.push_str(&format!("&code_challenge={}&code_challenge_method=S256", code_challenge));
+        }
+
+        Ok(url)
+    }
+
+    fn generate_state(&self) -> String {
+        let mut rng = rand::thread_rng();
+        (0..32).map(|_| rng.sample(rand::distributions::Alphanumeric) as char).collect()
+    }
+
+    fn generate_pkce_params(&self) -> (String, String) {
+        if !self.use_pkce {
+            return (String::new(), String::new());
+        }
+        let mut rng = rand::thread_rng();
+        let code_verifier: String = (0..128).map(|_| rng.sample(rand::distributions::Alphanumeric) as char).collect();
+        
+        let mut hasher = Sha256::new();
+        hasher.update(code_verifier.as_bytes());
+        let code_challenge = general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize());
+
+        (code_verifier, code_challenge)
     }
 
     pub fn build_token_url(&self) -> String {
@@ -104,56 +166,64 @@ impl OidcAgent {
     pub fn get_token(
         &self,
         code: &str,
-    ) -> Result<TokenEndpointResponse, Box<dyn std::error::Error>> {
+    ) -> Result<TokenEndpointResponse, OidcError> {
         let token_url = self.build_token_url();
 
-        let params = [
+        let mut params = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", &self.redirect_url),
             ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
         ];
 
-        let client = reqwest::blocking::Client::new();
-        let response = client.post(&token_url).form(&params).send()?;
-
-        if !response.status().is_success() {
-            return Err(format!("Token request failed with status: {}", response.status()).into());
+        if let Some(code_verifier) = &self.code_verifier {
+            params.push(("code_verifier", code_verifier));
+        } else {
+            params.push(("client_secret", &self.client_secret));
         }
 
-        let json: Value = response.json()?;
+        let client = reqwest::blocking::Client::new();
+        let response = client.post(&token_url)
+            .form(&params)
+            .send()
+            .map_err(OidcError::NetworkError)?;
+
+        if !response.status().is_success() {
+            return Err(OidcError::InvalidResponse(format!("Token request failed with status: {}", response.status())));
+        }
+
+        let json: Value = response.json().map_err(OidcError::NetworkError)?;
         println!("{:?}", json.clone());
 
-        match jwt_client::decode_jwt_without_verification(
-            &json["id_token"].as_str().unwrap().to_string(),
-        ) {
-            Ok((header, payload)) => {
-                println!("Header: {:#?}", header);
-                println!("Payload: {:#?}", payload);
-            }
-            Err(_) => todo!(),
-        };
+        if let Some(id_token) = json["id_token"].as_str() {
+            match jwt_client::decode_jwt_without_verification(id_token) {
+                Ok((header, payload)) => {
+                    println!("Header: {:#?}", header);
+                    println!("Payload: {:#?}", payload);
+                }
+                Err(e) => eprintln!("Failed to decode JWT: {}", e),
+            };
+        }
 
-        return Ok(TokenEndpointResponse {
+        Ok(TokenEndpointResponse {
             access_token: json["access_token"]
                 .as_str()
-                .ok_or_else(|| "Token type not found in response")?
+                .ok_or_else(|| OidcError::MissingField("access_token".to_string()))?
                 .to_string(),
             token_type: json["token_type"]
                 .as_str()
-                .ok_or_else(|| "Token type not found in response")?
+                .ok_or_else(|| OidcError::MissingField("token_type".to_string()))?
                 .to_string(),
             expires_in: json["expires_in"]
                 .as_u64()
-                .ok_or_else(|| "Expires in not found in response")?,
+                .ok_or_else(|| OidcError::MissingField("expires_in".to_string()))?,
             refresh_token: json["refresh_token"].as_str().map(|s| s.to_string()),
             scope: json["scope"].as_str().map(|s| s.to_string()),
             id_token: json["id_token"].as_str().map(|s| s.to_string()),
-        });
+        })
     }
 
-    pub fn handle_error(&self, error: Box<dyn std::error::Error>) -> Result<(), String> {
+    pub fn handle_error(&self, error: OidcError) -> Result<(), String> {
         eprintln!("An error occurred during the OIDC flow: {}", error);
         Err(error.to_string())
     }
@@ -165,6 +235,7 @@ impl OidcAgent {
         redirect_url: &str,
         scope: Vec<String>,
         state: Option<String>,
+        use_pkce: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut agent = Self {
             issuer: issuer.to_string(),
@@ -178,7 +249,10 @@ impl OidcAgent {
                 user_info_url: String::new(),
                 jwks_url: String::new(),
             },
-            state: state,
+            state,
+            code_verifier: None,
+            code_challenge: None,
+            use_pkce,
         };
 
         agent.well_knowns = agent.fetch_well_knowns_from_issuer()?;

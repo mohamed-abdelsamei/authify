@@ -26,6 +26,9 @@ struct Args {
     /// The state for the OIDC flow`         `
     #[arg(long)]
     state: Option<String>,
+    /// Enable PKCE flow
+    #[arg(long)]
+    pkce: bool,
 }
 
 /// The main entry point for the OIDC client application.
@@ -54,13 +57,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Client Secret: {}", args.client_secret);
     println!("Redirect URL: {}", args.redirect_url);
 
-    let agent = match oidc::oidc_agent::OidcAgent::new(
+    let mut agent = match oidc::oidc_agent::OidcAgent::new(
         &args.issuer,
         &args.client_id,
         &args.client_secret,
         &args.redirect_url,
         args.scope,
         args.state,
+        args.pkce,
     ) {
         Ok(agent) => agent,
         Err(e) => {
@@ -75,8 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // build auth url
     let auth_url = agent.build_authorization_url();
-    println!("Auth URL: {}", auth_url);
 
+    let auth_url = auth_url.unwrap();
+    println!("Authorization URL: {}", auth_url.clone());
     // open auth_url in browser
     match open::that(auth_url) {
         Ok(_) => println!("Opened auth URL in browser"),

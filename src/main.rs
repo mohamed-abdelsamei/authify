@@ -1,103 +1,118 @@
 pub mod oidc;
 pub mod utils;
 
+use authify::oidc::callback_listener;
+use authify::oidc::oidc_client::OidcClient;
 use clap::Parser;
-use iden::oidc::callback_listener;
+use serde_json::to_string_pretty;
 
-/// Command-line arguments for the OIDC client application
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    /// The issuer URL for the OIDC provider
-    #[arg(long)]
-    issuer: String,
-    /// The client ID for this OIDC client
-    #[arg(long)]
-    client_id: String,
-    /// The client secret for this OIDC client
-    #[arg(long)]
-    client_secret: String,
-    /// The redirect URL for the OIDC flow
-    #[arg(long, default_value = "http://127.0.0.1:3030/callback")]
-    redirect_url: String,
-    /// The scope requested for the OIDC flow
-    #[arg(long,default_values=vec!("openid"))]
-    scope: Vec<String>,
-    /// The state for the OIDC flow`         `
-    #[arg(long)]
-    state: Option<String>,
-    /// Enable PKCE flow
-    #[arg(long)]
-    pkce: bool,
-}
+#[command(version, about = "Authify: An OIDC client CLI tool to login and get access tokens", long_about = None)]
 
-/// The main entry point for the OIDC client application.
-///
-/// This function performs the following steps:
-/// 1. Parses command-line arguments
-/// 2. Logs the input parameters
-/// 3. Creates an OidcAgent instance
-/// 4. Builds the authorization URL
-/// 5. Starts the callback listener
-/// 6. Exchanges the authorization code for an access token
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// - The OidcAgent creation fails
-/// - The callback listener encounters an error
-/// - The token exchange fails
+pub struct Args {
+    /// The issuer URL of the OIDC provider
+    #[arg(short = 'i', long)]
+    pub issuer: String,
+
+    /// The client ID registered with the OIDC provider
+    #[arg(short = 'c', long)]
+    pub client_id: String,
+
+    /// The client secret registered with the OIDC provider
+    #[arg(short = 's', long)]
+    pub client_secret: String,
+
+    /// The redirect URL for the OIDC provider (default: http://127.0.0.1:3030/callback)
+    #[arg(short = 'r', long, default_value = "http://127.0.0.1:3030/callback")]
+    pub redirect_url: String,
+
+    /// The scope of the access request (default: openid)
+    #[arg(short = 'o', long, default_value = "openid")]
+    pub scope: String,
+
+    /// An optional state parameter for the request
+    #[arg(short = 't', long)]
+    pub state: Option<String>,
+
+    /// An optional refresh token to renew the access token
+    #[arg(short = 'f', long)]
+    pub refresh_token: Option<String>,
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Parse command-line arguments
     let args: Args = Args::parse();
 
-    // Log the input parameters
-    println!("Issuer: {}", args.issuer);
-    println!("Client ID: {}", args.client_id);
-    println!("Client Secret: {}", args.client_secret);
-    println!("Redirect URL: {}", args.redirect_url);
-
-    let mut agent = match oidc::oidc_agent::OidcAgent::new(
+    let mut client = OidcClient::new(
         &args.issuer,
         &args.client_id,
         &args.client_secret,
         &args.redirect_url,
-        args.scope,
+        args.scope.split_whitespace().map(String::from).collect(),
         args.state,
-        args.pkce,
-    ) {
-        Ok(agent) => agent,
-        Err(e) => {
-            eprintln!("Failed to create OidcAgent: {}", e);
-            return Err(e); // or handle the error appropriately
-        }
-    };
+    )?;
 
-    // check  well-knowns
-    let wells = agent.get_well_knowns();
-    utils::print_object(wells);
+    let wells = client.get_well_knowns();
+    println!("Well-Known Endpoints: {}", to_string_pretty(&wells)?);
 
-    // build auth url
-    let auth_url = agent.build_authorization_url();
+    if let Some(refresh_token) = &args.refresh_token {
+        handle_refresh_token(&mut client, refresh_token)?;
+    } else {
+        handle_authorization_code_flow(&mut client)?;
+    }
 
-    let auth_url = auth_url.unwrap();
+    Ok(())
+}
+
+fn handle_refresh_token(
+    client: &mut OidcClient,
+    refresh_token: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let token_endpoint_response = client.refresh_token(refresh_token)?;
+    println!(
+        "Token Endpoint Response: {}",
+        to_string_pretty(&token_endpoint_response)?
+    );
+
+    if let Ok(user_info) = client.get_user_info(&token_endpoint_response.access_token) {
+        println!("User Info: {}", to_string_pretty(&user_info)?);
+    } else {
+        eprintln!("Failed to get user info");
+    }
+    Ok(())
+}
+
+fn handle_authorization_code_flow(
+    client: &mut OidcClient,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let auth_url = client.build_authorization_url()?;
     println!("Authorization URL: {}", auth_url.clone());
-    // open auth_url in browser
-    match open::that(auth_url) {
-        Ok(_) => println!("Opened auth URL in browser"),
-        Err(e) => eprintln!("Failed to open auth URL in browser: {}", e),
+
+    if open::that(auth_url).is_err() {
+        eprintln!("Failed to open auth URL in browser");
     }
 
-    // start http server to listed to callback url
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let code = runtime
-        .block_on(async { callback_listener::listen().await })
-        .expect("Failed to get auth code");
+    let code = runtime.block_on(async {
+        match callback_listener::listen().await {
+            Ok(code) => Ok(code),
+            Err(e) => {
+                eprintln!("Failed to get auth code: {}", e);
+                Err(e as Box<dyn std::error::Error>)
+            }
+        }
+    })?;
     println!("Authorization code: {}", code.clone());
-    let token_endpoint_response = agent.get_token(code.as_str());
-    match token_endpoint_response {
-        Ok(token_endpoint_response) => utils::print_object(&token_endpoint_response),
-        Err(e) => eprintln!("Failed to get token: {}", e),
+
+    let token_endpoint_response = client.get_token(code.as_str())?;
+    println!(
+        "Token Endpoint Response: {}",
+        to_string_pretty(&token_endpoint_response)?
+    );
+
+    if let Ok(user_info) = client.get_user_info(&token_endpoint_response.access_token) {
+        println!("User Info: {}", to_string_pretty(&user_info)?);
+    } else {
+        eprintln!("Failed to get user info");
     }
+
     Ok(())
 }

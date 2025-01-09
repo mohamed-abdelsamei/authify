@@ -4,10 +4,10 @@ Authify is a command-line tool that acts as an OIDC client, allowing users to lo
 
 ## Features
 
-- Login using OpenID Connect (OIDC)
-- Fetch access tokens
-- Refresh tokens
-- Retrieve user information
+- Login using OpenID Connect (OIDC) - Done
+- Fetch access tokens - Done
+- Refresh tokens - In Progress
+- Retrieve user information - Done
 
 ## Installation
 
@@ -30,7 +30,15 @@ To use Authify, run the following command with the necessary arguments:
 ### Example
 
 ```sh
-./authify --issuer https://example.com --client-id myclientid --client-secret myclientsecret --redirect-url http://127.0.0.1:3030/callback --scope openid profile email"
+./authify --issuer https://example.com --client-id myclientid --client-secret myclientsecret --redirect-url http://127.0.0.1:3030/callback --scope "openid profile email"
+```
+
+### Google Auth Example
+
+To authenticate using Google, run the following command:
+
+```sh
+./authify --issuer https://accounts.google.com --client-id your-google-client-id --client-secret your-google-client-secret --redirect-url http://127.0.0.1:3030/callback --scope "openid profile email"
 ```
 
 ## Arguments
@@ -42,6 +50,30 @@ To use Authify, run the following command with the necessary arguments:
 - `--scope`: The scope of the access request (default: `openid`).
 - `--state`: An optional state parameter to maintain state between the request and callback.
 - `--refresh-token`: An optional refresh token to obtain a new access token.
+
+## TODO Features
+
+| Feature         | Description                          | Status       |
+|-----------------|--------------------------------------|--------------|
+| Login using OIDC| Allow users to login using OIDC      | Done         |
+| Fetch tokens    | Fetch access tokens                  | Done         |
+| Refresh tokens  | Implement automatic token refreshing | In Progress  |
+| Retrieve info   | Retrieve user information            | Done         |
+| PKCE Flow       | Support Proof Key for Code Exchange  | To Do        |
+
+## Building and Running
+
+To build the project, run:
+
+```sh
+cargo build --release
+```
+
+To execute the built binary, run:
+
+```sh
+./target/release/authify --issuer <issuer-url> --client-id <client-id> --client-secret <client-secret> [--redirect-url <redirect-url>] [--scope <scope>] [--state <state>] [--refresh-token <refresh-token>]
+```
 
 ## Help
 
